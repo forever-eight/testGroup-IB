@@ -12,6 +12,21 @@ import (
 
 var m map[string]Queue
 
+func main() {
+	portArg := flag.String("port", "8080", "http server port")
+	flag.Parse()
+	port := *portArg
+
+	m = make(map[string]Queue)
+
+	http.HandleFunc("/", Choice)
+	fmt.Println("starting server at :" + port)
+	err := http.ListenAndServe(":"+port, nil)
+	if err != nil {
+		panic(err)
+	}
+}
+
 type Queue struct {
 	answers *list.List // Ответы
 	waiters *list.List // Каналы, которые ждут
@@ -143,20 +158,5 @@ func Choice(w http.ResponseWriter, r *http.Request) {
 		get(w, r)
 	} else if r.Method == http.MethodPut {
 		put(w, r)
-	}
-}
-
-func main() {
-	portArg := flag.String("port", "8080", "http server port")
-	flag.Parse()
-	port := *portArg
-
-	m = make(map[string]Queue)
-
-	http.HandleFunc("/", Choice)
-	fmt.Println("starting server at :" + port)
-	err := http.ListenAndServe(":"+port, nil)
-	if err != nil {
-		panic(err)
 	}
 }
