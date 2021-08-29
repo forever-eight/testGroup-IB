@@ -2,6 +2,7 @@ package main
 
 import (
 	"container/list"
+	"flag"
 	"fmt"
 	"log"
 	"net/http"
@@ -146,11 +147,15 @@ func Choice(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
+	portArg := flag.String("port", "8080", "http server port")
+	flag.Parse()
+	port := *portArg
+
 	m = make(map[string]Queue)
 
 	http.HandleFunc("/", Choice)
-	fmt.Println("starting server at :8080")
-	err := http.ListenAndServe(":8080", nil)
+	fmt.Println("starting server at :" + port)
+	err := http.ListenAndServe(":"+port, nil)
 	if err != nil {
 		panic(err)
 	}
