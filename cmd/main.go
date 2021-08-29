@@ -9,33 +9,28 @@ import (
 	"time"
 )
 
-//todo подумать над структурой для ответа ждуняшек в очереди
-var cont map[string]*list.List
+var m map[string]Queue
 
-//todo структура с каналом и листом
-// Добавление в очередь
-func addToQueue(name string, param string) {
-	if cont[name] == nil {
-		queue := list.New()
-		queue.PushBack(param)
-		cont[name] = queue
-	} else {
-		cont[name].PushBack(param)
-	}
-
+type Queue struct {
+	answers *list.List // Ответы
+	waiters *list.List // Каналы, которые ждут
 }
 
-// Изъятие из очереди
-func getFromQueue(name string) string {
-	answer, ok := cont[name]
-	if !ok {
-		log.Println("Problem with map")
-		return ""
-	}
+// Добавление в очередь ответов
+func (q *Queue) AddAnswers(param string) {
+	q.answers.PushBack(param)
+}
 
-	if answer.Len() > 0 {
-		e := answer.Front() // Первый элемент
-		defer answer.Remove(e)
+// Добавление в очередь каналов для связи с ждущими
+func (q *Queue) AddWaiters(ch chan string) {
+	q.waiters.PushBack(ch)
+}
+
+// Изъятие из очереди ответов
+func (q *Queue) getFromAnswers() string {
+	if q.answers.Len() > 0 {
+		e := q.answers.Front() // Первый элемент
+		defer q.answers.Remove(e)
 
 		val := e.Value.(string)
 		return val
@@ -44,55 +39,71 @@ func getFromQueue(name string) string {
 	return ""
 }
 
-func timeout(w http.ResponseWriter, r *http.Request, n string, quit chan int) {
-	N, err := strconv.Atoi(n)
-	if err != nil {
-		log.Println(err)
-		return
+// Изъятие из очереди каналов для ждущих
+func (q *Queue) getFromWaiters() chan string {
+	if q.waiters.Len() > 0 {
+		e := q.waiters.Front() // Первый элемент
+		defer q.waiters.Remove(e)
+
+		val := e.Value.(chan string)
+		return val
 	}
 
-	// todo сделать там приведение к time.Duration
-	// todo ретерним строку с ответом и по каналу передаем готов ли у нас
-	select {
-	case news := <-quit:
-		fmt.Println(news)
-	case <-time.After(time.Duration(N) * time.Second):
-		fmt.Println("No news in five seconds.")
-	}
-
-}
-
-// Узнать, каким методом нам посылается запрос
-func Choice(w http.ResponseWriter, r *http.Request) {
-	if r.Method == http.MethodGet {
-		get(w, r)
-	} else if r.Method == http.MethodPut {
-		put(w, r)
-	}
+	return nil
 }
 
 // Получаем наше значение и добавляем в очередь
 func put(w http.ResponseWriter, r *http.Request) {
-	// todo  если пришло то, что мы ждем в гете - отправляем его сразу туда
-
 	name := r.URL.Path[1:]
 	v := r.URL.Query().Get("v")
-	addToQueue(name, v)
 	if v == "" {
 		http.Error(w, "", http.StatusBadRequest)
 		return
 	}
+	// Узнаем какая структура у нас конкретно для данной очереди
+	q, ok := m[name]
+	if !ok {
+		q = Queue{
+			answers: list.New(),
+			waiters: list.New(),
+		}
+		m[name] = q
+	}
 
+	// Берем первого ждущего из очереди и посылаем по каналу ему сразу правильный ответ
+	ch := q.getFromWaiters()
+	if ch != nil {
+		ch <- v
+		return
+	}
+
+	// Если у нас нет ждущего - добавляем в очередь
+	q.AddAnswers(v)
 }
 
-// Распределяем get (на с timeout и без )
 func get(w http.ResponseWriter, r *http.Request) {
 	name := r.URL.Path[1:]
-	answer := getFromQueue(name) // answer, ok
-	//todo get from queue сделать второе окей на пустоту проверка
+	// Узнаем какая структура у нас конкретно для данной очереди и запрашиваем туда
+	q, ok := m[name]
+	if !ok {
+		log.Println("Map error")
+		return
+	}
+	answer := q.getFromAnswers()
+	// Если timeout и ответа нет
 	if len(r.URL.Path) < len(r.RequestURI) && answer == "" {
-		quit := make(chan int)
-		timeout(w, r, r.URL.Query().Get("timeout"), quit)
+		ch := make(chan string)
+		q.AddWaiters(ch)
+
+		// Приведение типов
+		N, err := strconv.Atoi(r.URL.Query().Get("timeout"))
+		if err != nil {
+			log.Println(err)
+			return
+		}
+		sec := time.Duration(N)
+		timeout(w, ch, sec)
+
 		return
 	} else if answer == "" {
 		http.Error(w, "", http.StatusNotFound)
@@ -107,8 +118,36 @@ func get(w http.ResponseWriter, r *http.Request) {
 
 }
 
+// Выбор в случае, если нужно ждать
+func timeout(w http.ResponseWriter, ch chan string, N time.Duration) {
+	select {
+	// Если пришло раньше из потока, нежели закончился таймер
+	case news := <-ch:
+		// Отвечаем
+		_, err := w.Write([]byte(news))
+		if err != nil {
+			log.Println(err)
+			return
+		}
+	case <-time.After(N * time.Second):
+		http.Error(w, "", http.StatusNotFound)
+		return
+	}
+
+}
+
+// Узнать, каким методом нам посылается запрос
+func Choice(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		get(w, r)
+	} else if r.Method == http.MethodPut {
+		put(w, r)
+	}
+}
+
 func main() {
-	cont = make(map[string]*list.List)
+	m = make(map[string]Queue)
+
 	http.HandleFunc("/", Choice)
 	fmt.Println("starting server at :8080")
 	err := http.ListenAndServe(":8080", nil)
