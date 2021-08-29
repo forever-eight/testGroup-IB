@@ -3,7 +3,6 @@ package main
 import (
 	"container/list"
 	"flag"
-	"fmt"
 	"log"
 	"net/http"
 	"strconv"
@@ -20,11 +19,10 @@ func main() {
 
 	mainMap = Map{
 		mutex: sync.Mutex{},
-		m:     map[string]*Queue{},
+		m:     make(map[string]*Queue),
 	}
 
 	http.HandleFunc("/", Choice)
-	fmt.Println("starting server at :" + port)
 	err := http.ListenAndServe(":"+port, nil)
 	if err != nil {
 		panic(err)
@@ -40,6 +38,7 @@ type Map struct {
 func (m *Map) getQ(name string) *Queue {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
+
 	q, ok := mainMap.m[name]
 	if !ok {
 		q = &Queue{
