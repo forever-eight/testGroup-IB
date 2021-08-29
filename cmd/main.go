@@ -7,17 +7,21 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 )
 
-var m map[string]Queue
+var mainMap Map
 
 func main() {
 	portArg := flag.String("port", "8080", "http server port")
 	flag.Parse()
 	port := *portArg
 
-	m = make(map[string]Queue)
+	mainMap = Map{
+		mutex: sync.Mutex{},
+		m:     map[string]*Queue{},
+	}
 
 	http.HandleFunc("/", Choice)
 	fmt.Println("starting server at :" + port)
@@ -27,7 +31,29 @@ func main() {
 	}
 }
 
+type Map struct {
+	mutex sync.Mutex
+	m     map[string]*Queue // Основная мапка
+}
+
+// Возвращает структуру по очереди
+func (m *Map) getQ(name string) *Queue {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+	q, ok := mainMap.m[name]
+	if !ok {
+		q = &Queue{
+			answers: list.New(),
+			waiters: list.New(),
+		}
+		mainMap.m[name] = q
+	}
+	return q
+}
+
 type Queue struct {
+	m sync.Mutex
+
 	answers *list.List // Ответы
 	waiters *list.List // Каналы, которые ждут
 }
@@ -77,14 +103,9 @@ func put(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Узнаем какая структура у нас конкретно для данной очереди
-	q, ok := m[name]
-	if !ok {
-		q = Queue{
-			answers: list.New(),
-			waiters: list.New(),
-		}
-		m[name] = q
-	}
+	q := mainMap.getQ(name)
+	q.m.Lock()
+	defer q.m.Unlock()
 
 	// Берем первого ждущего из очереди и посылаем по каналу ему сразу правильный ответ
 	ch := q.getFromWaiters()
@@ -100,11 +121,10 @@ func put(w http.ResponseWriter, r *http.Request) {
 func get(w http.ResponseWriter, r *http.Request) {
 	name := r.URL.Path[1:]
 	// Узнаем какая структура у нас конкретно для данной очереди и запрашиваем туда
-	q, ok := m[name]
-	if !ok {
-		log.Println("Map error")
-		return
-	}
+	q := mainMap.getQ(name)
+
+	q.m.Lock()
+
 	answer := q.getFromAnswers()
 	// Если timeout и ответа нет
 	if len(r.URL.Path) < len(r.RequestURI) && answer == "" {
@@ -118,10 +138,12 @@ func get(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		sec := time.Duration(N)
+		q.m.Unlock()
 		timeout(w, ch, sec)
 
 		return
 	} else if answer == "" {
+		q.m.Unlock()
 		http.Error(w, "", http.StatusNotFound)
 		return
 	}
@@ -131,7 +153,7 @@ func get(w http.ResponseWriter, r *http.Request) {
 		log.Println(err)
 		return
 	}
-
+	q.m.Unlock()
 }
 
 // Выбор в случае, если нужно ждать
